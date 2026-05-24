@@ -392,7 +392,7 @@ class AquaTempAPI:
 
         if error is not None:
             if attempt < API_MAX_ATTEMPTS:
-                await sleep(1000)
+                await sleep(1)
 
                 await self._connect()
 
