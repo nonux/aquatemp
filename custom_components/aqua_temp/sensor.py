@@ -52,8 +52,18 @@ class AquaTempSensorEntity(BaseEntity, SensorEntity):
         state = device_data.get(self.entity_description.key)
 
         if isinstance(state, str):
-            state = float(state)
+            state = float(state)        
+            try:
+                state = float(state)
+            except (ValueError, TypeError):
+                state = None
 
+        if isinstance(state, (int, float)) and state < 0:
+            _LOGGER.warning(
+                f"Ignoring negative value {state} for sensor {self.entity_description.key}"
+            )
+            state = None
+            
         self._attr_native_value = state
 
         self.async_write_ha_state()
