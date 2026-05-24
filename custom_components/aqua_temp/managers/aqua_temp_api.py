@@ -33,6 +33,7 @@ from ..common.consts import (
     DEVICE_CONTROL_PARAM,
     DEVICE_CONTROL_VALUE,
     FAN_MODE_MAPPING,
+    FAULT_HISTORY_MAX_ENTRIES,
     HEADERS,
     HTTP_HEADER_X_TOKEN,
     POWER_MODE_OFF,
@@ -460,29 +461,88 @@ class AquaTempAPI:
 
         data = {param_device_code: device_code}
 
-        device_status_response = await self._post_request(Endpoints.DeviceStatus, data)
-        object_result = device_status_response.get(param_object_result, {})
-
-        is_fault = object_result.get(param_is_fault, str(False))
-        fault_description = None
-
-        if bool(is_fault):
-            device_fault_response = await self._post_request(
-                Endpoints.DeviceFault, data
-            )
-            object_results = device_fault_response.get(param_object_result, [])
-
-            if len(object_results) > 0:
-                object_result = object_results[0]
-                fault_description = object_result.get("description")
-
         device_data = self._devices[device_code]
 
-        if fault_description is None:
-            if "fault" in device_data:
-                device_data.pop("fault")
+        device_status_response = await self._post_request(Endpoints.DeviceStatus, data)
+        status_object_result = device_status_response.get(param_object_result, {}) or {}
+        is_fault_raw = status_object_result.get(param_is_fault)
+        is_fault_normalized = self._normalize_is_fault(is_fault_raw)
+
+        device_data["is_fault"] = is_fault_normalized
+
+        device_fault_response = await self._post_request(Endpoints.DeviceFault, data)
+        fault_entries_raw = device_fault_response.get(param_object_result) or []
+        fault_entries = [
+            self._normalize_fault_entry(entry)
+            for entry in fault_entries_raw
+            if isinstance(entry, dict)
+        ]
+
+        history = fault_entries[:FAULT_HISTORY_MAX_ENTRIES]
+        device_data["fault_history"] = history
+        device_data["fault_history_count"] = len(history)
+
+        if history:
+            latest = history[0]
+            device_data["last_fault_code"] = latest.get("fault_code")
+            device_data["last_fault_time"] = latest.get("fault_time")
+            device_data["last_fault_description"] = latest.get("description")
+            device_data["fault"] = latest.get("description") or latest.get("fault_code")
         else:
-            device_data["fault"] = fault_description
+            device_data["last_fault_code"] = None
+            device_data["last_fault_time"] = None
+            device_data["last_fault_description"] = None
+            device_data.pop("fault", None)
+
+    @staticmethod
+    def _normalize_is_fault(value) -> str:
+        """Normalize the cloud's `is_fault` representation to "1" / "0".
+        The cloud has shipped this as a JSON boolean, "0"/"1", "true"/"false"
+        and even "True"/"False" depending on account/api level.
+        """
+        if value is None:
+            return POWER_MODE_OFF
+        if isinstance(value, bool):
+            return POWER_MODE_ON if value else POWER_MODE_OFF
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return POWER_MODE_ON
+        return POWER_MODE_OFF
+
+    @staticmethod
+    def _normalize_fault_entry(entry: dict) -> dict:
+        """Pull common fields out of a fault history entry.
+        Field names vary across api levels: description / error_msg / fault_msg,
+        fault_time / errorTime / time. Keep the original dict accessible too.
+        """
+        fault_code = (
+            entry.get("fault_code")
+            or entry.get("faultCode")
+            or entry.get("error_code")
+            or entry.get("errorCode")
+        )
+        description = (
+            entry.get("description")
+            or entry.get("fault_msg")
+            or entry.get("faultMsg")
+            or entry.get("error_msg")
+            or entry.get("errorMsg")
+        )
+        fault_time = (
+            entry.get("fault_time")
+            or entry.get("faultTime")
+            or entry.get("error_time")
+            or entry.get("errorTime")
+            or entry.get("time")
+            or entry.get("create_time")
+            or entry.get("createTime")
+        )
+        return {
+            "fault_code": fault_code,
+            "description": description,
+            "fault_time": fault_time,
+            "raw": entry,
+        }
 
     async def _login(self):
         try:
