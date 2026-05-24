@@ -97,6 +97,12 @@
       "default_1159": {
         "name": "1159"
       },
+      "default_2055": {
+        "name": "Real Power Value"
+      },
+      "default_2057": {
+        "name": "Total Power Value (24h)"
+      },
       "default_2064": {
         "name": "2064"
       },
