@@ -33,6 +33,7 @@ from ..common.consts import (
     DEVICE_CONTROL_PARAM,
     DEVICE_CONTROL_VALUE,
     FAN_MODE_MAPPING,
+    FAULT_HISTORY_MAX_ENTRIES,
     HEADERS,
     HTTP_HEADER_X_TOKEN,
     POWER_MODE_OFF,
@@ -169,7 +170,7 @@ class AquaTempAPI:
 
         if error is not None:
             if attempt < API_MAX_ATTEMPTS:
-                await sleep(1000)
+                await sleep(1)
 
                 await self._internal_update(attempt + 1)
 
@@ -392,7 +393,7 @@ class AquaTempAPI:
 
         if error is not None:
             if attempt < API_MAX_ATTEMPTS:
-                await sleep(1000)
+                await sleep(1)
 
                 await self._connect()
 
@@ -403,6 +404,14 @@ class AquaTempAPI:
 
     async def _fetch_data(self, device_code: str):
         codes = self._config_manager.get_supported_protocol_codes(device_code)
+
+        # Temporary debug 11-Aug
+#        _LOGGER.warning(
+#            "AquaTemp DEBUG device=%s supported_codes=%s",
+#            device_code,
+#            codes,
+#        )
+        # end of temporary debug
 
         param_device_code = self._config_manager.get_api_param(APIParam.DeviceCode)
         param_protocal_codes = self._config_manager.get_api_param(
@@ -418,11 +427,35 @@ class AquaTempAPI:
         }
 
         data_response = await self._post_request(Endpoints.DeviceData, data)
-        error_msg = data_response.get(param_error_msg)
 
+        # Temporary debug 11-Aug
+#        _LOGGER.warning(
+#            "AquaTemp DEBUG device=%s API response keys=%s error=%s objectResult_count=%s",
+#            device_code,
+#            list(data_response.keys())
+#            if isinstance(data_response, dict)
+#            else type(data_response),
+#            data_response.get(param_error_msg)
+#            if isinstance(data_response, dict)
+#            else None,
+#            len(data_response.get(param_object_result, []))
+#            if isinstance(data_response, dict)
+#            else None,
+#        )
+        # end of temporary debug
+
+        error_msg = data_response.get(param_error_msg)
         object_result_items = data_response.get(param_object_result, [])
 
         if error_msg == "Success":
+            # TEMPORARY DEBUG: dump the raw DeviceData parameters.
+            # Do not log the request data because it contains the device code.
+#            _LOGGER.warning(
+#                "AquaTemp DeviceData RAW - %s parameters: %s",
+#                len(object_result_items),
+#                json.dumps(object_result_items, ensure_ascii=False),
+#            )
+
             for object_result_item in object_result_items:
                 code = object_result_item.get("code")
                 value = object_result_item.get("value")
@@ -434,11 +467,14 @@ class AquaTempAPI:
 
         else:
             error_code = data_response.get(param_error_code)
+
             if error_code == "-100":
                 raise InvalidTokenError(f"Fetch data for device {device_code}")
 
             else:
-                _LOGGER.error(f"Failed to fetch parameters, Error: {error_msg}")
+                _LOGGER.error(
+                    f"Failed to fetch parameters, Error: {error_msg}"
+                )
 
     async def _send_passthrough_instruction(self, device_code: str):
         param_device_code = self._config_manager.get_api_param(APIParam.DeviceCode)
@@ -460,29 +496,147 @@ class AquaTempAPI:
 
         data = {param_device_code: device_code}
 
-        device_status_response = await self._post_request(Endpoints.DeviceStatus, data)
-        object_result = device_status_response.get(param_object_result, {})
-
-        is_fault = object_result.get(param_is_fault, str(False))
-        fault_description = None
-
-        if bool(is_fault):
-            device_fault_response = await self._post_request(
-                Endpoints.DeviceFault, data
-            )
-            object_results = device_fault_response.get(param_object_result, [])
-
-            if len(object_results) > 0:
-                object_result = object_results[0]
-                fault_description = object_result.get("description")
-
         device_data = self._devices[device_code]
 
-        if fault_description is None:
-            if "fault" in device_data:
-                device_data.pop("fault")
+        device_status_response = await self._post_request(
+            Endpoints.DeviceStatus, data
+        )
+
+        status_object_result = device_status_response.get(param_object_result, {}) or {}
+
+        # ------------------------------------------------------------------
+        # DEBUG DeviceStatus
+        # ------------------------------------------------------------------
+        # _LOGGER.warning(
+        #     "AquaTemp DEBUG DeviceStatus device=%s objectResult=%s",
+        #     device_code,
+        #     status_object_result,
+        # )
+
+        is_fault_raw = status_object_result.get(param_is_fault)
+
+        is_fault_normalized = self._normalize_is_fault(is_fault_raw)
+
+        # Le statut réel retourné par l'API.
+        #
+        # Exemple observé :
+        # {
+        #     'is_fault': False,
+        #     'isFault': False,
+        #     'status': 'ONLINE'
+        # }
+        #
+        # On le conserve dans les données du device afin que
+        # l'entité "device_status" puisse le lire.
+        device_status = status_object_result.get("status")
+
+        if device_status is not None:
+            device_status = str(device_status).strip().upper()
+
+        device_data["device_status"] = device_status
+
+        device_data["is_fault"] = is_fault_normalized
+
+        # ------------------------------------------------------------------
+        # DEBUG normalized DeviceStatus
+        # ------------------------------------------------------------------
+        # _LOGGER.warning(
+        #     "AquaTemp DEBUG DeviceStatus normalized device=%s status=%s is_fault=%s",
+        #     device_code,
+        #     device_status,
+        #     is_fault_normalized,
+        # )
+
+        device_fault_response = await self._post_request(
+            Endpoints.DeviceFault, data
+        )
+
+        fault_entries_raw = device_fault_response.get(param_object_result) or []
+
+        fault_entries = [
+            self._normalize_fault_entry(entry)
+            for entry in fault_entries_raw
+            if isinstance(entry, dict)
+        ]
+
+        history = fault_entries[:FAULT_HISTORY_MAX_ENTRIES]
+
+        device_data["fault_history"] = history
+        device_data["fault_history_count"] = len(history)
+
+        if history:
+            latest = history[0]
+
+            device_data["last_fault_code"] = latest.get("fault_code")
+            device_data["last_fault_time"] = latest.get("fault_time")
+            device_data["last_fault_description"] = latest.get("description")
+            device_data["fault"] = (
+                latest.get("description") or latest.get("fault_code")
+            )
         else:
-            device_data["fault"] = fault_description
+            device_data["last_fault_code"] = None
+            device_data["last_fault_time"] = None
+            device_data["last_fault_description"] = None
+            device_data.pop("fault", None)
+
+    @staticmethod
+    def _normalize_is_fault(value) -> str:
+        """Normalize the cloud's `is_fault` representation to "1" / "0".
+
+        The cloud has shipped this as a JSON boolean, "0"/"1", "true"/"false"
+        and even "True"/"False" depending on account/api level.
+        """
+        if value is None:
+            return POWER_MODE_OFF
+
+        if isinstance(value, bool):
+            return POWER_MODE_ON if value else POWER_MODE_OFF
+
+        text = str(value).strip().lower()
+
+        if text in ("1", "true", "yes", "on"):
+            return POWER_MODE_ON
+
+        return POWER_MODE_OFF
+
+    @staticmethod
+    def _normalize_fault_entry(entry: dict) -> dict:
+        """Pull common fields out of a fault history entry.
+
+        Field names vary across api levels: description / error_msg / fault_msg,
+        fault_time / errorTime / time. Keep the original dict accessible too.
+        """
+        fault_code = (
+            entry.get("fault_code")
+            or entry.get("faultCode")
+            or entry.get("error_code")
+            or entry.get("errorCode")
+        )
+
+        description = (
+            entry.get("description")
+            or entry.get("fault_msg")
+            or entry.get("faultMsg")
+            or entry.get("error_msg")
+            or entry.get("errorMsg")
+        )
+
+        fault_time = (
+            entry.get("fault_time")
+            or entry.get("faultTime")
+            or entry.get("error_time")
+            or entry.get("errorTime")
+            or entry.get("time")
+            or entry.get("create_time")
+            or entry.get("createTime")
+        )
+
+        return {
+            "fault_code": fault_code,
+            "description": description,
+            "fault_time": fault_time,
+            "raw": entry,
+        }
 
     async def _login(self):
         try:
@@ -502,9 +656,13 @@ class AquaTempAPI:
 
             password_hashed = md5hash.hexdigest()
 
-            data = {param_username: config_data.username, "password": password_hashed}
+            data = {
+                param_username: config_data.username,
+                "password": password_hashed,
+            }
 
             login_response = await self._post_request(Endpoints.Login, data)
+
             object_result = login_response.get(param_object_result, {})
 
             self._login_details = object_result
@@ -521,6 +679,7 @@ class AquaTempAPI:
             line_number = tb.tb_lineno
 
             _LOGGER.error(f"Failed to login, Error: {ex}, Line: {line_number}")
+
             self.set_token()
 
         if self._token is None:
@@ -533,6 +692,7 @@ class AquaTempAPI:
         user_info_response = await self._post_request(Endpoints.UserInfo)
 
         object_result = user_info_response.get(param_object_result, {})
+
         user_id = object_result.get(param_user_id)
 
         for device_list_url in DEVICE_LISTS:
@@ -594,7 +754,10 @@ class AquaTempAPI:
             response.raise_for_status()
 
             result = await response.json()
-            _LOGGER.debug(f"Request to {url}, Body: {data}, Result: {result}")
+
+            _LOGGER.debug(
+                f"Request to {url}, Body: {data}, Result: {result}"
+            )
 
         return result
 
@@ -605,11 +768,13 @@ class AquaTempAPI:
 
     def get_device_target_temperature(self, device_code: str) -> float | None:
         hvac_mode = self.get_device_hvac_mode(device_code)
+
         target_temperature_pc = self._get_target_temperature_protocol_code(
             device_code, hvac_mode
         )
 
         device_data = self.get_device_data(device_code)
+
         target_temperature = device_data.get(target_temperature_pc)
 
         if target_temperature == "":
@@ -622,9 +787,11 @@ class AquaTempAPI:
 
     def get_device_current_temperature(self, device_code: str) -> float | None:
         device_data = self.get_device_data(device_code)
+
         pc_key = self._config_manager.get_pc_key(
             device_code, CONFIG_SET_CURRENT_TEMPERATURE
         )
+
         current_temperature = device_data.get(pc_key)
 
         if current_temperature == "":
@@ -639,6 +806,7 @@ class AquaTempAPI:
         device_data = self.get_device_data(device_code)
 
         hvac_mode = self.get_device_hvac_mode(device_code)
+
         key = self._config_manager.get_hvac_mode_pc_key(
             device_code, hvac_mode, CONFIG_HVAC_MINIMUM
         )
@@ -674,19 +842,28 @@ class AquaTempAPI:
 
     def get_device_hvac_mode(self, device_code: str) -> HVACMode:
         device_data = self.get_device_data(device_code)
-        pc_key = self._config_manager.get_pc_key(device_code, CONFIG_SET_MODE)
+
+        pc_key = self._config_manager.get_pc_key(
+            device_code, CONFIG_SET_MODE
+        )
+
         device_mode = device_data.get(pc_key)
 
         hvac_mode = self._config_manager.get_hvac_reverse_mapping(
             device_code, device_mode
         )
+
         result = HVACMode(hvac_mode)
 
         return result
 
     def get_device_fan_mode(self, device_code: str) -> str:
         device_data = self.get_device_data(device_code)
-        pc_key = self._config_manager.get_pc_key(device_code, CONFIG_SET_FAN)
+
+        pc_key = self._config_manager.get_pc_key(
+            device_code, CONFIG_SET_FAN
+        )
+
         manual_mute = device_data.get(pc_key)
 
         fan_mode = self._config_manager.get_fan_reverse_mapping(
@@ -697,9 +874,13 @@ class AquaTempAPI:
 
     def get_device_power(self, device_code: str) -> bool:
         device_data = self.get_device_data(device_code)
-        pc_key = self._config_manager.get_pc_key(device_code, CONFIG_SET_POWER)
+
+        pc_key = self._config_manager.get_pc_key(
+            device_code, CONFIG_SET_POWER
+        )
 
         power = device_data.get(pc_key)
+
         is_on = power == POWER_MODE_ON
 
         return is_on
@@ -708,21 +889,27 @@ class AquaTempAPI:
         self, device_code: str, hvac_mode: HVACMode
     ):
         target_temperature_pc = self._config_manager.get_hvac_mode_pc_key(
-            device_code, hvac_mode, CONFIG_HVAC_TARGET
+            device_code,
+            hvac_mode,
+            CONFIG_HVAC_TARGET,
         )
 
-        _LOGGER.debug(f"Target temp PC {target_temperature_pc}, HA Mode: {hvac_mode}")
+        _LOGGER.debug(
+            f"Target temp PC {target_temperature_pc}, HA Mode: {hvac_mode}"
+        )
 
         return target_temperature_pc
 
     def _get_device_product_id(self, device_data: dict):
         param = self._config_manager.get_api_param(APIParam.ProductId)
+
         product_id = device_data.get(param)
 
         return product_id
 
     def _get_device_id(self, device_data: dict):
         param = self._config_manager.get_api_param(APIParam.DeviceCode)
+
         device_code = device_data.get(param)
 
         return device_code

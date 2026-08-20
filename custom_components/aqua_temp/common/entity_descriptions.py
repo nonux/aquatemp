@@ -41,6 +41,9 @@ class AquaTempSensorEntityDescription(
     SensorEntityDescription, AquaTempEntityDescription
 ):
     platform: Platform | None = Platform.SENSOR
+    state_class: str | None = None
+    convert_to_float: bool = True
+    attributes: list[str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -84,6 +87,32 @@ DEFAULT_ENTITY_DESCRIPTIONS: list[AquaTempEntityDescription] = [
         is_protocol_code=False,
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         translation_key="device_status",
+    ),
+    AquaTempSensorEntityDescription(
+        key="last_fault_code",
+        name="Last Fault Code",
+        is_protocol_code=False,
+        convert_to_float=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        attributes=["last_fault_description", "last_fault_time"],
+        translation_key="last_fault_code",
+    ),
+    AquaTempSensorEntityDescription(
+        key="last_fault_time",
+        name="Last Fault Time",
+        is_protocol_code=False,
+        convert_to_float=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        translation_key="last_fault_time",
+    ),
+    AquaTempSensorEntityDescription(
+        key="fault_history_count",
+        name="Fault History",
+        is_protocol_code=False,
+        convert_to_float=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        attributes=["fault_history"],
+        translation_key="fault_history",
     ),
     AquaTempClimateEntityDescription(key="Mode", name=None, translation_key="mode"),
 ]

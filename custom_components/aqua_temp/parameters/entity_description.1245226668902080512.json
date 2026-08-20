@@ -646,5 +646,14 @@
     "platform": "sensor",
     "device_class": null,
     "unit_of_measurement": null
+  },
+  {
+    "key": "Z04",
+    "name": "Actual Power [Z04]",
+    "platform": "sensor",
+    "device_class": "power",
+    "state_class": "measurement",
+    "unit_of_measurement": "W",
+    "scale": 0.1
   }
 ]

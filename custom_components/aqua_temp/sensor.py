@@ -39,6 +39,7 @@ class AquaTempSensorEntity(BaseEntity, SensorEntity):
         self._attr_native_unit_of_measurement = (
             entity_description.native_unit_of_measurement
         )
+        self._attr_state_class = entity_description.state_class
 
         if entity_description.device_class == SensorDeviceClass.TEMPERATURE:
             self._attr_native_unit_of_measurement = coordinator.get_temperature_unit(
@@ -51,9 +52,24 @@ class AquaTempSensorEntity(BaseEntity, SensorEntity):
 
         state = device_data.get(self.entity_description.key)
 
-        if isinstance(state, str):
-            state = float(state)
+        if (
+            getattr(self.entity_description, "convert_to_float", True)
+            and isinstance(state, str)
+        ):
+            try:
+                state = float(state)
+            except (ValueError, TypeError):
+                state = None
+
+        # Negative values are valid for some AquaTemp sensors,
+        # so they must not be rejected here.
 
         self._attr_native_value = state
+
+        attribute_keys = getattr(self.entity_description, "attributes", None)
+        if attribute_keys:
+            self._attr_extra_state_attributes = {
+                key: device_data.get(key) for key in attribute_keys
+            }
 
         self.async_write_ha_state()

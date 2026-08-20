@@ -67,6 +67,15 @@
       }
     },
     "sensor": {
+      "last_fault_code": {
+        "name": "Last Fault Code"
+      },
+      "last_fault_time": {
+        "name": "Last Fault Time"
+      },
+      "fault_history": {
+        "name": "Fault History"
+      },
       "default_power": {
         "name": "Power"
       },
@@ -570,6 +579,12 @@
       },
       "default_t28": {
         "name": "Target frequency [T28]"
+      },
+      "default_2055": {
+        "name": "Real Power Value"
+      },
+      "default_2057": {
+        "name": "Total Power Value (24h)"
       },
       "1245226668902080512_power": {
         "name": "Power"

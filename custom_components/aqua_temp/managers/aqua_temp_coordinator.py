@@ -20,14 +20,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class AquaTempCoordinator(DataUpdateCoordinator):
-    """My custom coordinator."""
+    """Coordinator for the AquaTemp integration."""
 
     def __init__(
         self,
         hass,
         config_manager: AquaTempConfigManager,
     ):
-        """Initialize my coordinator."""
+        """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
@@ -40,8 +40,13 @@ class AquaTempCoordinator(DataUpdateCoordinator):
         self._config_manager = config_manager
 
     @property
-    def api_status(self):
-        return self._api.is_connected
+    def api_status(self) -> bool:
+        """Return the current API status.
+
+        The coordinator's last_update_success is the authoritative
+        indication of whether the last scheduled API update succeeded.
+        """
+        return self.last_update_success is True
 
     @property
     def config_manager(self):
@@ -63,9 +68,14 @@ class AquaTempCoordinator(DataUpdateCoordinator):
 
         entry = self.config_manager.entry
         platforms = self.config_manager.platforms
-        await self.hass.config_entries.async_forward_entry_setups(entry, platforms)
 
-        _LOGGER.info(f"Start loading {DOMAIN} integration, Entry ID: {entry.entry_id}")
+        await self.hass.config_entries.async_forward_entry_setups(
+            entry, platforms
+        )
+
+        _LOGGER.info(
+            f"Start loading {DOMAIN} integration, Entry ID: {entry.entry_id}"
+        )
 
         await self._api.initialize()
 
@@ -77,6 +87,7 @@ class AquaTempCoordinator(DataUpdateCoordinator):
         param_custom_model = self._config_manager.get_api_param(APIParam.CustomModel)
 
         device_data = self.get_device_data(device_code)
+
         device_nickname = device_data.get(param_nickname)
         device_model = device_data.get(param_custom_model)
         device_id = device_data.get(param_device_id)
@@ -104,11 +115,7 @@ class AquaTempCoordinator(DataUpdateCoordinator):
         return data
 
     async def _async_update_data(self):
-        """Fetch parameters from API endpoint.
-
-        This is the place to pre-process the parameters to lookup tables
-        so entities can quickly look up their parameters.
-        """
+        """Fetch parameters from API endpoint."""
         try:
             await self._api.update()
 
@@ -121,7 +128,14 @@ class AquaTempCoordinator(DataUpdateCoordinator):
             }
 
         except Exception as err:
-            raise UpdateFailed(f"Error communicating with API: {err}")
+            _LOGGER.warning(
+                "Error communicating with AquaTemp API: %s",
+                err,
+            )
+
+            raise UpdateFailed(
+                f"Error communicating with API: {err}"
+            ) from err
 
     def get_temperature_unit(self, device_code: str):
         return self._config_manager.get_temperature_unit(device_code)
